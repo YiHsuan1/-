@@ -259,6 +259,7 @@ val_ds = val_ds.map(dict_to_tuple, num_parallel_calls=tf.data.AUTOTUNE)
 val_ds = val_ds.prefetch(tf.data.AUTOTUNE)
 ```
 創建模型
+
 YOLOv8 是一種前沿的 YOLO 模型，可用於各種電腦視覺任務，例如物件偵測、影像分類和實例分割。YOLOv5 的創建者 Ultralytics 也開發了 YOLOv8，與前身相比，YOLOv8 在架構和開發人員體驗方面融入了許多改進和變化。YOLOv8是業界備受推崇的最新最先進模型。
 
 首先，我們將建立一個主幹實例，該實例將由我們的 yolov8 偵測器類別使用。
@@ -298,6 +299,7 @@ yolo.compile(
 )
 ```
 COCO 指標回呼
+
 我們將使用BoxCOCOMetricsKerasCV 來評估模型並計算映射（平均精確度）分數、召回率和精確度。當 mAP 分數提高時，我們也會保存模型。
 ```python
 class EvaluateCOCOMetricsCallback(keras.callbacks.Callback):
@@ -338,7 +340,8 @@ yolo.fit(
     callbacks=[EvaluateCOCOMetricsCallback(val_ds, "model.h5")],
 )
 ```
-視覺化預測
+
+Visualize Predictions
 ```python
 def visualize_detections(model, dataset, bounding_box_format):
     images, y_true = next(iter(dataset.take(1)))
