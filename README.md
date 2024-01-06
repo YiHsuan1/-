@@ -72,5 +72,193 @@ jpg_files = sorted(
     ]
 )
 ```
+下面的函數讀取 XML 檔案並尋找影像名稱和路徑，然後迭代 XML 檔案中的每個物件以提取每個物件的邊界框座標和類別標籤。
+
+此函數傳回三個值：影像路徑、邊界框清單（每個邊界框表示為四個浮點數的清單：xmin、ymin、xmax、ymax）以及與每個邊界框對應的類別ID 清單（表示為整數） 。類別 ID 是透過使用名為 的字典將類別標籤對應到整數值來獲得的class_mapping。
+```python
+def parse_annotation(xml_file):
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    image_name = root.find("filename").text
+    image_path = os.path.join(path_images, image_name)
+
+    boxes = []
+    classes = []
+    for obj in root.iter("object"):
+        cls = obj.find("name").text
+        classes.append(cls)
+
+        bbox = obj.find("bndbox")
+        xmin = float(bbox.find("xmin").text)
+        ymin = float(bbox.find("ymin").text)
+        xmax = float(bbox.find("xmax").text)
+        ymax = float(bbox.find("ymax").text)
+        boxes.append([xmin, ymin, xmax, ymax])
+
+    class_ids = [
+        list(class_mapping.keys())[list(class_mapping.values()).index(cls)]
+        for cls in classes
+    ]
+    return image_path, boxes, class_ids
 
 
+image_paths = []
+bbox = []
+classes = []
+for xml_file in tqdm(xml_files):
+    image_path, boxes, class_ids = parse_annotation(xml_file)
+    image_paths.append(image_path)
+    bbox.append(boxes)
+    classes.append(class_ids)
+```
+在這裡，我們使用和 列表tf.ragged.constant創建不規則張量。參差不齊的張量是一種可以沿著一個或多個維度處理不同長度的資料的張量。這在處理具有可變長度序列的資料（例如文字或時間序列資料）時非常有用。bboxclasses
+```python
+classes = [
+    [8, 8, 8, 8, 8],      # 5 classes
+    [12, 14, 14, 14],     # 4 classes
+    [1],                  # 1 class
+    [7, 7],               # 2 classes
+ ...]
+bbox = [
+    [[199.0, 19.0, 390.0, 401.0],
+    [217.0, 15.0, 270.0, 157.0],
+    [393.0, 18.0, 432.0, 162.0],
+    [1.0, 15.0, 226.0, 276.0],
+    [19.0, 95.0, 458.0, 443.0]],     #image 1 has 4 objects
+    [[52.0, 117.0, 109.0, 177.0]],   #image 2 has 1 object
+    [[88.0, 87.0, 235.0, 322.0],
+    [113.0, 117.0, 218.0, 471.0]],   #image 3 has 2 objects
+ ...]
+```
+在這種情況下，每個影像的bbox和classes列表具有不同的長度，具體取決於影像中的物件數量以及相應的邊界框和類別。為了處理這種變化，使用不規則張量而不是常規張量。
+後來，這些不規則的張量被用來創造一個tf.data.Dataset使用 from_tensor_slices方法。此方法透過沿著第一維度對輸入張量進行切片來建立資料集。透過使用參差不齊的張量，數據集可以處理每個影像的不同長度的數據，並為進一步處理提供靈活的輸入管道。
+```python
+bbox = tf.ragged.constant(bbox)
+classes = tf.ragged.constant(classes)
+image_paths = tf.ragged.constant(image_paths)
+
+data = tf.data.Dataset.from_tensor_slices((image_paths, classes, bbox))
+```
+將數據拆分為訓練數據和驗證數據
+```python
+# Determine the number of validation samples
+num_val = int(len(xml_files) * SPLIT_RATIO)
+
+# Split the dataset into train and validation sets
+val_data = data.take(num_val)
+train_data = data.skip(num_val)
+```
+讓我們看看資料載入和邊界框格式以使事情順利進行。KerasCV 中的邊界框具有預定的格式。為此，您必須將邊界框捆綁到符合下列要求的字典中：
+```python
+bounding_boxes = {
+    # num_boxes may be a Ragged dimension
+    'boxes': Tensor(shape=[batch, num_boxes, 4]),
+    'classes': Tensor(shape=[batch, num_boxes])
+}
+```
+該字典有兩個鍵'boxes'和'classes'，每個鍵都對應到 TensorFlow RaggedTensor 或 Tensor 物件。張'boxes'量的形狀為[batch, num_boxes, 4]，其中batch是批次中圖像的數量，num_boxes是任何圖像中邊界框的最大數量。4 表示定義邊界框所需的四個值：xmin、ymin、xmax、ymax。
+
+張'classes'量的形狀為[batch, num_boxes]，其中每個元素代表張量中對應邊界框的類別標籤'boxes'。num_boxes 維度可能參差不齊，這意味著批次中的圖像之間的框數量可能會有所不同。
+
+最終的字典應該是：
+```python
+{"images": images, "bounding_boxes": bounding_boxes}
+def load_image(image_path):
+    image = tf.io.read_file(image_path)
+    image = tf.image.decode_jpeg(image, channels=3)
+    return image
+
+
+def load_dataset(image_path, classes, bbox):
+    # Read Image
+    image = load_image(image_path)
+    bounding_boxes = {
+        "classes": tf.cast(classes, dtype=tf.float32),
+        "boxes": bbox,
+    }
+    return {"images": tf.cast(image, tf.float32), "bounding_boxes": bounding_boxes}
+```
+在這裡，我們建立一個圖層，將影像大小調整為 640x640 像素，同時保持原始縱橫比。與影像關聯的邊界框在 xyxy格式中指定。如有必要，調整大小的影像將用零填充以保持原始縱橫比。
+
+KerasCV 支援的邊界框格式： 1. CENTER_XYWH 2. XYWH 3. XYXY 4. REL_XYXY 5. REL_XYWH 6. YXYX 7. REL_YXYX
+
+您可以在文件中閱讀有關 KerasCV 邊界框格式的更多資訊 。
+
+此外，可以在任兩對之間執行格式轉換：
+```python
+boxes = keras_cv.bounding_box.convert_format(
+        bounding_box,
+        images=image,
+        source="xyxy",  # Original Format
+        target="xywh",  # Target Format (to which we want to convert)
+    )
+```
+數據增強
+建構物件檢測管道時最具挑戰性的任務之一是資料增強。它涉及對輸入圖像應用各種變換，以增加訓練資料的多樣性並提高模型的泛化能力。然而，在處理物件偵測任務時，它變得更加複雜，因為這些轉換需要了解底層邊界框並相應地更新它們。
+
+KerasCV 為邊界框增強提供本機支援。KerasCV 提供了大量專門用於處理邊界框的資料增強層。這些圖層在影像轉換時智慧地調整邊界框座標，確保邊界框保持準確並與增強影像對齊。
+
+透過利用 KerasCV 的功能，開發人員可以方便地將邊界框友好的資料增強整合到他們的物件偵測管道中。透過在 tf.data 管道中執行即時增強，該過程變得無縫且高效，從而實現更好的訓練和更準確的物件偵測結果。
+```python
+augmenter = keras.Sequential(
+    layers=[
+        keras_cv.layers.RandomFlip(mode="horizontal", bounding_box_format="xyxy"),
+        keras_cv.layers.RandomShear(
+            x_factor=0.2, y_factor=0.2, bounding_box_format="xyxy"
+        ),
+        keras_cv.layers.JitteredResize(
+            target_size=(640, 640), scale_factor=(0.75, 1.3), bounding_box_format="xyxy"
+        ),
+    ]
+)
+```
+建立訓練資料集
+```python
+train_ds = train_data.map(load_dataset, num_parallel_calls=tf.data.AUTOTUNE)
+train_ds = train_ds.shuffle(BATCH_SIZE * 4)
+train_ds = train_ds.ragged_batch(BATCH_SIZE, drop_remainder=True)
+train_ds = train_ds.map(augmenter, num_parallel_calls=tf.data.AUTOTUNE)
+```
+視覺化
+```python
+def visualize_dataset(inputs, value_range, rows, cols, bounding_box_format):
+    inputs = next(iter(inputs.take(1)))
+    images, bounding_boxes = inputs["images"], inputs["bounding_boxes"]
+    visualization.plot_bounding_box_gallery(
+        images,
+        value_range=value_range,
+        rows=rows,
+        cols=cols,
+        y_true=bounding_boxes,
+        scale=5,
+        font_scale=0.7,
+        bounding_box_format=bounding_box_format,
+        class_mapping=class_mapping,
+    )
+
+
+visualize_dataset(
+    train_ds, bounding_box_format="xyxy", value_range=(0, 255), rows=2, cols=2
+)
+
+visualize_dataset(
+    val_ds, bounding_box_format="xyxy", value_range=(0, 255), rows=2, cols=2
+)
+```
+我們需要從預處理字典中提取輸入並準備好將其輸入模型。
+```python
+def dict_to_tuple(inputs):
+    return inputs["images"], inputs["bounding_boxes"]
+
+
+train_ds = train_ds.map(dict_to_tuple, num_parallel_calls=tf.data.AUTOTUNE)
+train_ds = train_ds.prefetch(tf.data.AUTOTUNE)
+
+val_ds = val_ds.map(dict_to_tuple, num_parallel_calls=tf.data.AUTOTUNE)
+val_ds = val_ds.prefetch(tf.data.AUTOTUNE)
+```
+創建模型
+YOLOv8 是一種前沿的 YOLO 模型，可用於各種電腦視覺任務，例如物件偵測、影像分類和實例分割。YOLOv5 的創建者 Ultralytics 也開發了 YOLOv8，與前身相比，YOLOv8 在架構和開發人員體驗方面融入了許多改進和變化。YOLOv8是業界備受推崇的最新最先進模型。
+
+下表比較了五種不同尺寸（以像素為單位）的 YOLOv8 模型的效能指標：YOLOv8n、YOLOv8s、YOLOv8m、YOLOv8l 和 YOLOv8x。這些指標包括驗證資料的不同交集 (IoU) 閾值下的平均精確度 (mAP) 值、採用 ONNX 格式和 A100 TensorRT 的 CPU 推理速度、參數數量以及浮點運算 (FLOP) 數量（分別以百萬和十億為單位）。隨著模型規模的增加，mAP、參數和 FLOP 通常會增加，而速度會降低。YOLOv8x 具有最高的 mAP、參數和 FLOP，但推理速度最慢，而 YOLOv8n 具有最小的尺寸、最快的推理速度和最低的 mAP、參數和 FLOP。
