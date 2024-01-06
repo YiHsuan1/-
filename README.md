@@ -261,4 +261,103 @@ val_ds = val_ds.prefetch(tf.data.AUTOTUNE)
 創建模型
 YOLOv8 是一種前沿的 YOLO 模型，可用於各種電腦視覺任務，例如物件偵測、影像分類和實例分割。YOLOv5 的創建者 Ultralytics 也開發了 YOLOv8，與前身相比，YOLOv8 在架構和開發人員體驗方面融入了許多改進和變化。YOLOv8是業界備受推崇的最新最先進模型。
 
-下表比較了五種不同尺寸（以像素為單位）的 YOLOv8 模型的效能指標：YOLOv8n、YOLOv8s、YOLOv8m、YOLOv8l 和 YOLOv8x。這些指標包括驗證資料的不同交集 (IoU) 閾值下的平均精確度 (mAP) 值、採用 ONNX 格式和 A100 TensorRT 的 CPU 推理速度、參數數量以及浮點運算 (FLOP) 數量（分別以百萬和十億為單位）。隨著模型規模的增加，mAP、參數和 FLOP 通常會增加，而速度會降低。YOLOv8x 具有最高的 mAP、參數和 FLOP，但推理速度最慢，而 YOLOv8n 具有最小的尺寸、最快的推理速度和最低的 mAP、參數和 FLOP。
+首先，我們將建立一個主幹實例，該實例將由我們的 yolov8 偵測器類別使用。
+
+KerasCV 中可用的 YOLOV8 主幹：
+預訓練可可重量：
+```python
+backbone = keras_cv.models.YOLOV8Backbone.from_preset(
+    "yolo_v8_s_backbone_coco"  # We will use yolov8 small backbone with coco weights
+)
+```
+下來，讓我們使用 建立一個 YOLOV8 模型YOLOV8Detector，它接受特徵提取器作為backbone參數，num_classes該參數根據列表的大小指定要檢測的物件類別的數量class_mapping， bounding_box_format該參數告知模型 bbox 的格式在資料集中，最後，特徵金字塔網絡（FPN）深度由參數指定 fpn_depth。
+
+透過 KerasCV，使用上述任何主幹網路建立 YOLOV8 都很簡單。
+```python
+yolo = keras_cv.models.YOLOV8Detector(
+    num_classes=len(class_mapping),
+    bounding_box_format="xyxy",
+    backbone=backbone,
+    fpn_depth=1,
+)
+```
+編譯模型
+用於YOLOV8的損失
+
+分類損失：此損失函數計算預期類別機率與實際類別機率之間的差異。在這種情況下 binary_crossentropy，使用了二元分類問題的一個突出解決方案。我們利用二元交叉熵，因為辨識的每個事物要麼被歸類為屬於或不屬於某個物件類別（例如人、汽車等）。
+
+Box Loss：box_loss是用來衡量預測邊界框與真實邊界框之間差異的損失函數。在這種情況下，使用完整的 IoU (CIoU) 度量，它不僅測量預測邊界框和真實邊界框之間的重疊，還考慮長寬比、中心距離和框架大小的差異。這些損失函數共同幫助透過最小化預測類別機率和邊界框與真實類別機率和邊界框之間的差異來優化物件偵測模型。
+```python
+optimizer = tf.keras.optimizers.Adam(
+    learning_rate=LEARNING_RATE,
+    global_clipnorm=GLOBAL_CLIPNORM,
+)
+
+yolo.compile(
+    optimizer=optimizer, classification_loss="binary_crossentropy", box_loss="ciou"
+)
+```
+COCO 指標回呼
+我們將使用BoxCOCOMetricsKerasCV 來評估模型並計算映射（平均精確度）分數、召回率和精確度。當 mAP 分數提高時，我們也會保存模型。
+```python
+class EvaluateCOCOMetricsCallback(keras.callbacks.Callback):
+    def __init__(self, data, save_path):
+        super().__init__()
+        self.data = data
+        self.metrics = keras_cv.metrics.BoxCOCOMetrics(
+            bounding_box_format="xyxy",
+            evaluate_freq=1e9,
+        )
+
+        self.save_path = save_path
+        self.best_map = -1.0
+
+    def on_epoch_end(self, epoch, logs):
+        self.metrics.reset_state()
+        for batch in self.data:
+            images, y_true = batch[0], batch[1]
+            y_pred = self.model.predict(images, verbose=0)
+            self.metrics.update_state(y_true, y_pred)
+
+        metrics = self.metrics.result(force=True)
+        logs.update(metrics)
+
+        current_map = metrics["MaP"]
+        if current_map > self.best_map:
+            self.best_map = current_map
+            self.model.save(self.save_path)  # Save the model when mAP improves
+
+        return logs
+```
+訓練模型
+```python
+yolo.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=3,
+    callbacks=[EvaluateCOCOMetricsCallback(val_ds, "model.h5")],
+)
+```
+視覺化預測
+```python
+def visualize_detections(model, dataset, bounding_box_format):
+    images, y_true = next(iter(dataset.take(1)))
+    y_pred = model.predict(images)
+    y_pred = bounding_box.to_ragged(y_pred)
+    visualization.plot_bounding_box_gallery(
+        images,
+        value_range=(0, 255),
+        bounding_box_format=bounding_box_format,
+        y_true=y_true,
+        y_pred=y_pred,
+        scale=4,
+        rows=2,
+        cols=2,
+        show=True,
+        font_scale=0.7,
+        class_mapping=class_mapping,
+    )
+
+
+visualize_detections(yolo, dataset=val_ds, bounding_box_format="xyxy")
+```
