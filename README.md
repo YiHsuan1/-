@@ -1,5 +1,5 @@
 # Efficient Object Detection with YOLOV8 and KerasCV（使用YOLOV8和KerasCV進行高效能物件偵測）
-南華大學跨領域-人工智慧期中報告 11123024楊佳宜 11123007陳奕瑄 11118128 吳佳恩
+南華大學跨領域-人工智慧期末報告 11123024楊佳宜 11123007陳奕瑄 11118128 吳佳恩
 
 介紹
 KerasCV 是 Keras 用於電腦視覺任務的擴展。在此範例中，我們將了解如何使用 KerasCV 訓練 YOLOV8 目標偵測模型。
