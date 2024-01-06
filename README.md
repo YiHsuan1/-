@@ -8,3 +8,24 @@ KerasCV 包含針對流行電腦視覺資料集的預訓練模型，例如 Image
 ```python
 !pip install —upgrade git+https://github.com/keras-team/keras-cv -q
 ```
+設定
+```python
+import os
+from tqdm.auto import tqdm
+import xml.etree.ElementTree as ET
+
+import tensorflow as tf
+from tensorflow import keras
+
+import keras_cv
+from keras_cv import bounding_box
+from keras_cv import visualization
+```
+載入數據
+在本指南中，我們將使用從 roboflow獲得的自動駕駛汽車資料集。為了使資料集更易於管理，我提取了較大資料集的子集，該資料集最初由 15,000 個資料樣本組成。從這個子集中，我選擇了 7,316 個樣本進行模型訓練。
+為了簡化手頭上的任務並集中精力，我們將使用更少數量的物件類別。具體來說，我們將考慮五個主要類別進行檢測和分類：汽車、行人、交通燈、騎自行車的人和卡車。這些類別代表了自動駕駛汽車中遇到的一些最常見和最重要的物件。
+透過將資料集縮小到這些特定類別，我們可以集中精力建立強大的物件偵測模型，該模型可以準確地識別和分類這些重要物件。
+TensorFlow Datasets 庫提供了一種下載和使用各種資料集（包括物件偵測資料集）的便捷方法。對於想要快速開始處理資料而無需手動下載和預處理資料的人來說，這可能是一個不錯的選擇。
+您可以在此處查看各種物件偵測資料集 TensorFlow 資料集
+但是，在此程式碼範例中，我們將示範如何使用 TensorFlow 的管道從頭開始載入資料集tf.data。這種方法提供了更大的靈活性，並允許您根據需要自訂預處理步驟。
+載入 TensorFlow 資料集庫中不可用的自訂資料集是使用tf.data管道的主要優點之一。此方法可讓您建立適合資料集的特定需求和要求的自訂資料預處理管道。
